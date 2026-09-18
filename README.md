@@ -27,30 +27,15 @@ Kleidung mit dem Handy abfotografieren → Hintergrund wird automatisch entfernt
 
 ---
 
-## Auf GitHub Pages veröffentlichen (einmalig, ca. 10 Minuten)
+## Live
 
-1. **GitHub-Konto** anlegen (kostenlos): <https://github.com/signup>
-2. **Neues Repository** erstellen: <https://github.com/new>
-   - Name z. B. `kleiderschrank`
-   - Sichtbarkeit **Public**. Pages ist nur für öffentliche Repos gratis. Öffentlich ist nur der *Code*, deine Fotos und Daten landen nie im Repository.
-   - Kein README anhaken.
-3. **Code hochladen.** Im Ordner `kleidung` ein Terminal öffnen und ausführen (`DEINNAME` ersetzen):
-   ```bash
-   git init
-   git add .
-   git commit -m "Digitaler Kleiderschrank"
-   git branch -M main
-   git remote add origin https://github.com/DEINNAME/kleiderschrank.git
-   git push -u origin main
-   ```
-4. Im Repository auf GitHub: **Settings → Pages → Build and deployment → Source: „GitHub Actions“** auswählen.
-5. Unter dem Reiter **Actions** läuft jetzt „Auf GitHub Pages veröffentlichen“ (ca. 1–2 Minuten). Danach ist die Seite erreichbar unter
-   **`https://DEINNAME.github.io/kleiderschrank/`**
-6. **Auf dem Handy** öffnen und zum Startbildschirm hinzufügen:
-   - iPhone (Safari): Teilen-Symbol → „Zum Home-Bildschirm“
-   - Android (Chrome): Menü ⋮ → „App installieren“ / „Zum Startbildschirm hinzufügen“
+**<https://soulp3aking.github.io/kleiderschrank/>**
 
-Jede spätere Änderung: `git add . && git commit -m "…" && git push`. Die Seite aktualisiert sich dann automatisch.
+Auf dem Handy öffnen und zum Startbildschirm hinzufügen:
+- iPhone (Safari): Teilen-Symbol → „Zum Home-Bildschirm“
+- Android (Chrome): Menü ⋮ → „App installieren“ / „Zum Startbildschirm hinzufügen“
+
+Jede Änderung, die auf `main` gepusht wird, baut GitHub automatisch neu und veröffentlicht sie (Workflow „Auf GitHub Pages veröffentlichen“, ca. 1–2 Minuten). Das Repository ist öffentlich, weil GitHub Pages nur so kostenlos ist. Öffentlich ist nur der *Code*, deine Fotos und Daten landen nie im Repository.
 
 ---
 
