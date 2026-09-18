@@ -1,0 +1,146 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink-950: #0b0b0f;
+  --color-ink-900: #111117;
+  --color-ink-850: #16161e;
+  --color-ink-800: #1c1c26;
+  --color-ink-700: #262632;
+  --color-ink-600: #343443;
+  --color-ink-500: #4a4a5c;
+
+  --color-sand-100: #f6ead6;
+  --color-sand-200: #ecd7b4;
+  --color-sand-300: #e0bf8c;
+  --color-sand-400: #d2a765;
+  --color-sand-500: #c08f4a;
+
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: #ececf1;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Auf dem Handy soll nichts versehentlich markiert oder gezoomt werden. */
+button,
+label,
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px; /* verhindert Auto-Zoom auf iOS */
+}
+
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .pb-safe {
+    padding-bottom: calc(var(--safe-b) + 0.5rem);
+  }
+  .pt-safe {
+    padding-top: calc(var(--safe-t) + 0.5rem);
+  }
+  .checker {
+    background-image:
+      linear-gradient(45deg, #1e1e27 25%, transparent 25%),
+      linear-gradient(-45deg, #1e1e27 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #1e1e27 75%),
+      linear-gradient(-45deg, transparent 75%, #1e1e27 75%);
+    background-size: 18px 18px;
+    background-position:
+      0 0,
+      0 9px,
+      9px -9px,
+      -9px 0;
+    background-color: #16161d;
+  }
+}
+
+/* Regler sollen auch mit dem Daumen gut treffbar sein */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 34px;
+  background: transparent;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-ink-700);
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  margin-top: -11px;
+  height: 27px;
+  width: 27px;
+  border-radius: 999px;
+  background: var(--color-sand-300);
+  border: 3px solid var(--color-ink-900);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+}
+input[type='range']::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-ink-700);
+}
+input[type='range']::-moz-range-thumb {
+  height: 22px;
+  width: 22px;
+  border: 3px solid var(--color-ink-900);
+  border-radius: 999px;
+  background: var(--color-sand-300);
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fadeUp 0.22s ease-out both;
+}
+
+@keyframes sheetUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.animate-sheet {
+  animation: sheetUp 0.26s cubic-bezier(0.32, 0.72, 0, 1) both;
+}
