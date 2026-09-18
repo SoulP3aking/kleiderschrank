@@ -7,22 +7,40 @@ interface WardrobeDB extends DBSchema {
   outfits: { key: string; value: Outfit; indexes: { byCreated: number } }
   plan: { key: string; value: PlanEntry }
   settings: { key: string; value: unknown }
+  pending: { key: string; value: PendingPhoto; indexes: { byOrder: number } }
+}
+
+/**
+ * Ausgewählte, aber noch nicht fertig bearbeitete Fotos. Liegen sicher in der
+ * Datenbank, damit nach einem Absturz nichts neu ausgewählt werden muss.
+ */
+export interface PendingPhoto {
+  id: string
+  blob: Blob
+  name: string
+  order: number
 }
 
 let dbp: Promise<IDBPDatabase<WardrobeDB>> | null = null
 
 export function db() {
   if (!dbp) {
-    dbp = openDB<WardrobeDB>('kleiderschrank', 1, {
-      upgrade(d) {
-        const items = d.createObjectStore('items', { keyPath: 'id' })
-        items.createIndex('bySlot', 'slot')
-        items.createIndex('byCreated', 'createdAt')
-        d.createObjectStore('images')
-        const outfits = d.createObjectStore('outfits', { keyPath: 'id' })
-        outfits.createIndex('byCreated', 'createdAt')
-        d.createObjectStore('plan', { keyPath: 'date' })
-        d.createObjectStore('settings')
+    dbp = openDB<WardrobeDB>('kleiderschrank', 2, {
+      upgrade(d, oldVersion) {
+        if (oldVersion < 1) {
+          const items = d.createObjectStore('items', { keyPath: 'id' })
+          items.createIndex('bySlot', 'slot')
+          items.createIndex('byCreated', 'createdAt')
+          d.createObjectStore('images')
+          const outfits = d.createObjectStore('outfits', { keyPath: 'id' })
+          outfits.createIndex('byCreated', 'createdAt')
+          d.createObjectStore('plan', { keyPath: 'date' })
+          d.createObjectStore('settings')
+        }
+        if (oldVersion < 2) {
+          const pending = d.createObjectStore('pending', { keyPath: 'id' })
+          pending.createIndex('byOrder', 'order')
+        }
       },
     })
   }
@@ -31,6 +49,38 @@ export function db() {
 
 export const uid = (): string =>
   (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36))
+
+/* ---------------- Warteschlange ---------------- */
+
+/** Fotos sofort sichern – noch bevor irgendetwas Speicherhungriges passiert. */
+export async function addPending(files: File[]) {
+  const d = await db()
+  const start = Date.now()
+  const ids: string[] = []
+  for (let i = 0; i < files.length; i++) {
+    const id = uid()
+    await d.put('pending', { id, blob: files[i], name: files[i].name, order: start + i })
+    ids.push(id)
+  }
+  return ids
+}
+
+export async function getPending(id: string) {
+  return (await (await db()).get('pending', id)) ?? null
+}
+
+/** Ids in der Reihenfolge, in der die Fotos ausgewählt wurden. */
+export async function pendingIds() {
+  return (await (await db()).getAllKeysFromIndex('pending', 'byOrder')) as string[]
+}
+
+export async function deletePending(id: string) {
+  await (await db()).delete('pending', id)
+}
+
+export async function clearPending() {
+  await (await db()).clear('pending')
+}
 
 /* ---------------- Bilder ---------------- */
 
@@ -151,6 +201,6 @@ export async function requestPersistence() {
 export async function wipeAll() {
   const d = await db()
   await Promise.all(
-    (['items', 'images', 'outfits', 'plan', 'settings'] as const).map((s) => d.clear(s)),
+    (['items', 'images', 'outfits', 'plan', 'settings', 'pending'] as const).map((s) => d.clear(s)),
   )
 }

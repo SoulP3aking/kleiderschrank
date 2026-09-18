@@ -1,40 +1,42 @@
 /// <reference lib="webworker" />
 /**
  * Läuft in einem eigenen Thread, damit die Oberfläche nicht einfriert.
- * Die Modelle kommen vom Hugging-Face-CDN (kostenlos, ohne Account) und werden
- * danach vom Browser gecacht. Die Fotos selbst verlassen das Gerät nie.
+ * Die Modelle kommen von den CDNs von Hugging Face/jsDelivr (kostenlos, ohne
+ * Account) und werden danach vom Browser gecacht. Die Fotos verlassen das Gerät nie.
  *
- *  - Freistellen:  briaai/RMBG-1.4        (q8: 42 MB · fp16: 84 MB · fp32: 168 MB)
- *    q8 hinterlässt auf hellem Grund Flecken – die räumt cleanMask() im Editor weg.
- *  - Erkennen:     Xenova/mobileclip_s0   (nur Bild-Teil, fp16: 22 MB)
- *    Die q8-Variante dieses Modells liefert nur Zufallstreffer – fp16 ist so genau wie fp32.
- *    Die Text-Seite ist in clipLabels.json vorberechnet (scripts/build-clip-labels.mjs).
+ * Freistellen – welches Modell, entscheidet aiPlan.ts (je nach Gerät und Abstürzen):
+ *  - briaai/RMBG-1.4           fest 1024x1024, ~550 MB Arbeitsspeicher beim Rechnen
+ *                              (q8: 42 MB · fp16: 84 MB · fp32: 168 MB Download)
+ *  - BritishWerewolf/U-2-Netp  320x320, ~220 MB, 4,4 MB Download – Notfall-Stufe,
+ *                              schwach bei hellen Teilen auf hellem Grund
+ * Erkennen: Xenova/mobileclip_s0 (nur Bild-Teil, fp16: 22 MB). Die q8-Variante
+ * liefert nur Zufallstreffer. Die Text-Seite ist in clipLabels.json vorberechnet.
  */
 import {
   AutoModel,
   AutoProcessor,
   CLIPVisionModelWithProjection,
   RawImage,
+  Tensor,
   env,
   type PreTrainedModel,
   type Processor,
 } from '@huggingface/transformers'
+import type { SegPlan } from './aiPlan'
 import labels from './clipLabels.json'
-import type { AiQuality } from './types'
 
 env.allowLocalModels = false
 
-const SEG_MODEL = 'briaai/RMBG-1.4'
 const CLIP_MODEL = labels.model
-
-type Quality = AiQuality
-type Dtype = 'fp32' | 'fp16' | 'q8'
-type Device = 'webgpu' | 'wasm'
+const SEG_REPO: Record<SegPlan['model'], string> = {
+  rmbg: 'briaai/RMBG-1.4',
+  u2netp: 'BritishWerewolf/U-2-Netp',
+}
 
 export type WorkerIn =
-  | { type: 'segment'; id: string; buffer: ArrayBuffer; width: number; height: number; quality: Quality }
+  | { type: 'segment'; id: string; buffer: ArrayBuffer; width: number; height: number; plan: SegPlan }
   | { type: 'classify'; id: string; buffer: ArrayBuffer; width: number; height: number }
-  | { type: 'preload'; id: string; what: 'segment' | 'classify'; quality: Quality }
+  | { type: 'preload'; id: string; what: 'segment' | 'classify'; plan?: SegPlan }
 
 export type WorkerOut =
   | { type: 'progress'; task: string; text: string; ratio: number }
@@ -45,18 +47,6 @@ export type WorkerOut =
 
 const post = (msg: WorkerOut, transfer: Transferable[] = []) =>
   (self as unknown as DedicatedWorkerGlobalScope).postMessage(msg, transfer)
-
-let hasGpu: boolean | null = null
-async function gpuAvailable() {
-  if (hasGpu !== null) return hasGpu
-  try {
-    const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu
-    hasGpu = !!(gpu && (await gpu.requestAdapter()))
-  } catch {
-    hasGpu = false
-  }
-  return hasGpu
-}
 
 /** Baut aus den Fortschrittsdaten von transformers.js eine Zeile für die Anzeige. */
 function progressReporter(task: string) {
@@ -79,6 +69,8 @@ function progressReporter(task: string) {
         text: big ? `KI-Modell wird geladen … ${mb(loaded)} / ${mb(total)} MB` : 'KI-Modell wird geladen …',
         ratio: big ? loaded / total : 0,
       })
+    } else if (p.status === 'done' && p.file?.endsWith('.onnx')) {
+      post({ type: 'progress', task, text: 'KI-Modell wird gestartet …', ratio: 0 })
     }
   }
 }
@@ -96,55 +88,84 @@ function toRgb(buffer: ArrayBuffer, width: number, height: number, flatten: bool
   return new RawImage(out, width, height, 3)
 }
 
-/* ---------------- Freisteller (RMBG-1.4) ---------------- */
-
-let segModel: PreTrainedModel | null = null
-let segProcessor: Processor | null = null
-let segQuality: Quality | null = null
-
-async function loadSegmenter(quality: Quality) {
-  if (segModel && segProcessor && segQuality === quality) return
-  const gpu = await gpuAvailable()
-  // q8 ist auf der CPU (wasm) am schnellsten, fp16/fp32 spielen ihre Stärke auf der GPU aus.
-  // Gemessen: fp16 auf der GPU ~1 s pro Bild und sauberer als q8; q8 auf der CPU ~5 s.
-  const attempts: [Dtype, Device][] =
-    quality === 'schnell'
-      ? [['q8', 'wasm']]
-      : quality === 'auto'
-        ? gpu
-          ? [['fp16', 'webgpu'], ['q8', 'wasm']]
-          : [['q8', 'wasm']]
-        : gpu
-          ? [['fp16', 'webgpu'], ['fp32', 'webgpu'], ['fp32', 'wasm'], ['q8', 'wasm']]
-          : [['fp32', 'wasm'], ['q8', 'wasm']]
-
-  const progress_callback = progressReporter('segment')
-  let lastError: unknown
-  for (const [dtype, device] of attempts) {
-    try {
-      segModel = await AutoModel.from_pretrained(SEG_MODEL, { device, dtype, progress_callback })
-      segProcessor = await AutoProcessor.from_pretrained(SEG_MODEL, { progress_callback })
-      segQuality = quality
-      return
-    } catch (e) {
-      lastError = e
-      segModel = null
-      segProcessor = null
+/** Bild (w x h) in einen normierten CHW-Tensor size x size, Rest mit 0 aufgefüllt. */
+function toTensor(img: RawImage, size: number, mean: number[], std: number[]) {
+  const plane = size * size
+  const f = new Float32Array(3 * plane)
+  const ch = img.channels
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < img.width; x++) {
+      const s = (y * img.width + x) * ch
+      const d = y * size + x
+      for (let c = 0; c < 3; c++) f[c * plane + d] = (img.data[s + c] / 255 - mean[c]) / std[c]
     }
   }
-  throw lastError instanceof Error ? lastError : new Error('Freisteller-Modell nicht ladbar')
+  return new Tensor('float32', f, [1, 3, size, size])
+}
+
+/* ---------------- Freisteller ---------------- */
+
+let segModel: PreTrainedModel | null = null
+let segKey: string | null = null
+
+async function loadSegmenter(plan: SegPlan) {
+  const key = `${plan.model}-${plan.dtype}-${plan.device}`
+  if (segModel && segKey === key) return segModel
+  // Altes Modell erst freigeben – zwei gleichzeitig wären auf dem Handy zu viel.
+  if (segModel) {
+    await segModel.dispose().catch(() => {})
+    segModel = null
+    segKey = null
+  }
+  segModel = await AutoModel.from_pretrained(SEG_REPO[plan.model], {
+    device: plan.device,
+    dtype: plan.dtype,
+    progress_callback: progressReporter('segment'),
+  })
+  segKey = key
+  return segModel
+}
+
+async function segmentRmbg(model: PreTrainedModel, image: RawImage) {
+  // RMBG-1.4 akzeptiert nur exakt 1024x1024 (gemessen – andere Größen lehnt ONNX ab).
+  const resized = await image.resize(1024, 1024)
+  const out = await model({ input: toTensor(resized, 1024, [0.5, 0.5, 0.5], [1, 1, 1]) })
+  const tensor = out.output ?? Object.values(out)[0]
+  return RawImage.fromTensor(tensor[0].mul(255).to('uint8'))
+}
+
+async function segmentU2netp(model: PreTrainedModel, image: RawImage) {
+  // Seitenverhältnis behalten, längste Kante 320, oben links in 320x320 einsetzen.
+  const S = 320
+  const f = S / Math.max(image.width, image.height)
+  const w = Math.max(1, Math.round(image.width * f))
+  const h = Math.max(1, Math.round(image.height * f))
+  const resized = await image.resize(w, h)
+  const out = await model({
+    'input.1': toTensor(resized, S, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+  })
+  const t = (out['1959'] ?? Object.values(out)[0]) as Tensor
+  const d = t.data as Float32Array
+  let min = Infinity
+  let max = -Infinity
+  for (let i = 0; i < d.length; i++) {
+    if (d[i] < min) min = d[i]
+    if (d[i] > max) max = d[i]
+  }
+  const range = max - min || 1
+  const crop = new Uint8ClampedArray(w * h)
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) crop[y * w + x] = ((d[y * S + x] - min) / range) * 255
+  return new RawImage(crop, w, h, 1)
 }
 
 async function segment(msg: Extract<WorkerIn, { type: 'segment' }>) {
-  await loadSegmenter(msg.quality)
+  const model = await loadSegmenter(msg.plan)
   post({ type: 'progress', task: 'segment', text: 'Kleidungsstück wird freigestellt …', ratio: 1 })
-
   const image = toRgb(msg.buffer, msg.width, msg.height, false)
-  const { pixel_values } = await segProcessor!(image)
-  const result = await segModel!({ input: pixel_values })
-  // Je nach Modellrevision heißt der Ausgang "output" oder ist einfach der erste Tensor.
-  const tensor = result.output ?? Object.values(result)[0]
-  const mask = await RawImage.fromTensor(tensor[0].mul(255).to('uint8')).resize(msg.width, msg.height)
+  const small =
+    msg.plan.model === 'rmbg' ? await segmentRmbg(model, image) : await segmentU2netp(model, image)
+  const mask = await small.resize(msg.width, msg.height)
   const bytes = new Uint8ClampedArray(mask.data)
   post(
     { type: 'mask', id: msg.id, buffer: bytes.buffer as ArrayBuffer, width: mask.width, height: mask.height },
@@ -235,8 +256,8 @@ self.onmessage = async (e: MessageEvent<WorkerIn>) => {
     if (msg.type === 'segment') await segment(msg)
     else if (msg.type === 'classify') await classify(msg)
     else if (msg.type === 'preload') {
-      if (msg.what === 'segment') await loadSegmenter(msg.quality)
-      else await loadClip()
+      if (msg.what === 'segment' && msg.plan) await loadSegmenter(msg.plan)
+      else if (msg.what === 'classify') await loadClip()
       post({ type: 'ready', id: msg.id })
     }
   } catch (err) {

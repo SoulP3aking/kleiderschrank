@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { aiClassify } from '../lib/ai'
 import { colorName, textOn } from '../lib/color'
 import { dominantColors } from '../lib/color'
-import { putImage, uid } from '../lib/db'
+import { addPending, deletePending, getPending, pendingIds, putImage, uid } from '../lib/db'
 import { loadScaled, makeThumb, toStoredPng } from '../lib/image'
 import { forgetImage, imageUrl } from '../lib/imageUrls'
 import { useStore } from '../lib/store'
@@ -30,6 +30,8 @@ interface Props {
   onClose: () => void
   /** Vorhandenes Teil bearbeiten statt neu anlegen. */
   edit?: Item | null
+  /** Mit den Fotos aus der Warteschlange weitermachen (z. B. nach einem Absturz). */
+  resume?: boolean
   onSaved?: (item: Item) => void
 }
 
@@ -69,15 +71,19 @@ const emptyDraft = (): Draft => ({
   aspectBack: null,
 })
 
-export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
+export function ItemEditor({ open, onClose, edit, resume, onSaved }: Props) {
   const settings = useStore((s) => s.settings)
   const addItem = useStore((s) => s.addItem)
   const updateItem = useStore((s) => s.updateItem)
+  const pendingCount = useStore((s) => s.pendingCount)
+  const refreshPending = useStore((s) => s.refreshPending)
+  const discardPending = useStore((s) => s.discardPending)
 
   const [step, setStep] = useState<Step>('quelle')
   const [source, setSource] = useState<ImageData | null>(null)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
-  const [queue, setQueue] = useState<File[]>([])
+  /** Ids der noch wartenden Fotos (Warteschlange in der Datenbank). */
+  const [queue, setQueue] = useState<string[]>([])
   const [working, setWorking] = useState<string | null>(null)
   const [aiNote, setAiNote] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ front: string | null; back: string | null }>({
@@ -87,6 +93,38 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const camRef = useRef<HTMLInputElement>(null)
   const pendingView = useRef<View>('front')
+  /** Warteschlangen-Eintrag des Fotos, das gerade bearbeitet wird. */
+  const currentPending = useRef<string | null>(null)
+  /** Id des gerade offenen Entwurfs – für späte Ergebnisse der Erkennung. */
+  const draftIdRef = useRef<string>('')
+  useEffect(() => {
+    draftIdRef.current = draft.id
+  }, [draft.id])
+
+  /** Nächstes lesbares Foto aus der Warteschlange öffnen. */
+  const startPending = async (ids: string[]) => {
+    for (let i = 0; i < ids.length; i++) {
+      const photo = await getPending(ids[i])
+      if (!photo) continue
+      try {
+        const data = await loadScaled(photo.blob)
+        currentPending.current = ids[i]
+        pendingView.current = 'front'
+        setDraft(emptyDraft())
+        setSource(data)
+        setQueue(ids.slice(i + 1))
+        setAiNote(null)
+        setStep('freistellen')
+        return true
+      } catch {
+        // Unlesbares Bild würde sonst jedes Mal wieder auftauchen.
+        await deletePending(ids[i])
+      }
+    }
+    setQueue([])
+    await refreshPending()
+    return false
+  }
 
   useEffect(() => {
     if (!open) return
@@ -116,7 +154,16 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
     setSource(null)
     setAiNote(null)
     setQueue([])
-  }, [open, edit])
+    currentPending.current = null
+    if (!edit && resume) {
+      setWorking('Fotos werden geladen …')
+      void pendingIds()
+        .then(startPending)
+        .finally(() => setWorking(null))
+    }
+    // startPending bewusst nicht als Abhängigkeit: nur beim Öffnen starten.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, edit, resume])
 
   // Vorschaubilder für die Details-Ansicht
   useEffect(() => {
@@ -138,11 +185,25 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
     if (!files?.length) return
     pendingView.current = forView
     const list = [...files]
+    // Neue Fotos zuerst sicher ablegen – stürzt danach etwas ab, sind sie nicht weg.
+    if (forView === 'front' && step === 'quelle' && !edit) {
+      setWorking('Fotos werden gesichert …')
+      try {
+        const ids = await addPending(list)
+        await refreshPending()
+        await startPending(ids)
+      } catch {
+        setAiNote('Die Fotos konnten nicht gelesen werden.')
+      } finally {
+        setWorking(null)
+      }
+      return
+    }
     setWorking('Foto wird geladen …')
     try {
+      // Ersetzen bzw. Rückseite: immer nur ein Foto, die Warteschlange bleibt, wie sie ist.
       const data = await loadScaled(list[0])
       setSource(data)
-      setQueue(list.slice(1))
       setStep('freistellen')
     } catch {
       setAiNote('Dieses Bild konnte nicht gelesen werden.')
@@ -184,9 +245,12 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
 
       if (settings.aiClassify && !edit) {
         setAiNote('Kategorie wird erkannt …')
+        // Kommt das Ergebnis erst, wenn schon das nächste Foto dran ist, gehört
+        // es nicht mehr zu diesem Entwurf – dann verwerfen.
+        const forDraft = draft.id
         aiClassify(data)
           .then((res) => {
-            setDraft((d) => ({
+            setDraft((d) => (d.id !== forDraft ? d : {
               ...d,
               category: res.category,
               pattern: (PATTERNS as string[]).includes(res.pattern)
@@ -198,11 +262,15 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
                   ? [res.style as Style]
                   : [],
             }))
+            if (draftIdRef.current !== forDraft) return
             setAiNote(
               `Erkannt: ${res.category} (${Math.round(res.confidence * 100)} % sicher) – bei Bedarf einfach ändern.`,
             )
           })
-          .catch(() => setAiNote('Automatische Erkennung nicht möglich – bitte selbst auswählen.'))
+          .catch(() => {
+            if (draftIdRef.current === forDraft)
+              setAiNote('Automatische Erkennung nicht möglich – bitte selbst auswählen.')
+          })
       }
     } finally {
       setWorking(null)
@@ -268,18 +336,15 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
         onSaved?.(item)
       }
 
-      // Mehrere Fotos auf einmal ausgewählt? Direkt mit dem nächsten weitermachen.
-      if (queue.length) {
-        const [next, ...rest] = queue
-        const data = await loadScaled(next)
-        setDraft(emptyDraft())
-        setSource(data)
-        setQueue(rest)
-        pendingView.current = 'front'
-        setStep('freistellen')
-        setAiNote(null)
-        return
+      // Foto ist jetzt ein fertiges Teil – aus der Warteschlange nehmen.
+      if (currentPending.current) {
+        await deletePending(currentPending.current)
+        currentPending.current = null
+        await refreshPending()
       }
+
+      // Mehrere Fotos auf einmal ausgewählt? Direkt mit dem nächsten weitermachen.
+      if (queue.length && (await startPending(queue))) return
       onClose()
     } finally {
       setWorking(null)
@@ -361,6 +426,32 @@ export function ItemEditor({ open, onClose, edit, onSaved }: Props) {
 
       {step === 'quelle' && (
         <div className="space-y-3 py-2">
+          {pendingCount > 0 && (
+            <div className="rounded-2xl border border-sand-300/30 bg-sand-300/10 p-3.5">
+              <p className="text-[13px] text-sand-100">
+                {pendingCount === 1 ? '1 Foto wartet' : `${pendingCount} Fotos warten`} noch aufs
+                Freistellen.
+              </p>
+              <div className="mt-2.5 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  className="flex-1"
+                  onClick={() => {
+                    setWorking('Fotos werden geladen …')
+                    void pendingIds()
+                      .then(startPending)
+                      .finally(() => setWorking(null))
+                  }}
+                >
+                  Weitermachen
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void discardPending()}>
+                  Verwerfen
+                </Button>
+              </div>
+            </div>
+          )}
           <p className="text-[13.5px] leading-relaxed text-white/50">
             Leg das Teil flach hin – am besten auf einen ruhigen, einfarbigen Untergrund und mit
             gutem Licht. Das erkennt die KI am zuverlässigsten.

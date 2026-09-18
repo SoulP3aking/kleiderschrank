@@ -51,22 +51,32 @@ Auf dem iPhone: Die installierte Home-Bildschirm-App und Safari haben **getrennt
 
 ## Die KI-Modelle
 
-| Aufgabe | Modell | Download (einmalig) | Tempo |
+| Aufgabe | Modell | Download (einmalig) | Arbeitsspeicher beim Rechnen* |
 |---|---|---|---|
-| Freistellen, **„Automatisch“** (Standard) | [briaai/RMBG-1.4](https://huggingface.co/briaai/RMBG-1.4), fp16 auf der Grafikeinheit (WebGPU), sonst quantisiert | 84 MB bzw. 42 MB | ca. 1 s bzw. ca. 5 s pro Foto* |
-| Freistellen, „Sparsam“ | RMBG-1.4, quantisiert (q8) | 42 MB | ca. 5 s pro Foto* |
-| Freistellen, „Maximal“ | RMBG-1.4 fp16 (WebGPU) bzw. fp32 | 84 bzw. 168 MB | – |
-| Kategorie, Muster, Stil erkennen | [Xenova/mobileclip_s0](https://huggingface.co/Xenova/mobileclip_s0), nur der Bild-Teil, fp16 | 22 MB | < 1 s |
+| Freistellen, **„Automatisch“** (Standard) | [briaai/RMBG-1.4](https://huggingface.co/briaai/RMBG-1.4): am PC fp16 auf der Grafikeinheit, auf dem Handy quantisiert auf dem Prozessor | 84 MB (PC) bzw. 42 MB (Handy) | ca. 550 MB |
+| Freistellen, „Leicht“ | [U²-Net-p](https://huggingface.co/BritishWerewolf/U-2-Netp) (Apache-2.0) | 4,4 MB | ca. 220 MB |
+| Freistellen, „Maximal“ | RMBG-1.4 fp16 (Grafikeinheit) bzw. fp32 | 84 bzw. 168 MB | – |
+| Kategorie, Muster, Stil erkennen | [Xenova/mobileclip_s0](https://huggingface.co/Xenova/mobileclip_s0), nur der Bild-Teil, fp16 | 22 MB | gering |
 | Laufzeit (ONNX Runtime Web) | vom jsDelivr-CDN | ca. 27 MB | – |
 
-\* gemessen am PC, auf dem Handy entsprechend länger.
+\* gemessen im Browser am PC (WebAssembly-Speicher der KI-Laufzeit).
 
-- Die Einstellung findest du unter *Mehr → Automatik → Freisteller*.
+- Die Einstellung findest du unter *Mehr → Automatik → Freisteller*. Dort steht auch, welches Modell auf deinem Gerät gerade aktiv ist.
 - Den ersten Download am besten **im WLAN** starten: *Mehr → Modelle jetzt für offline laden*. Danach bleiben die Modelle im Browser gespeichert, und alles funktioniert offline.
-- Das kleine q8-Modell lässt auf hellem Untergrund manchmal Flecken stehen. Die App räumt die Maske deshalb automatisch nach (kleine abgetrennte Stellen werden entfernt).
+- RMBG-1.4 nimmt nur Bilder in genau 1024×1024 an. Die Auflösung lässt sich also nicht verkleinern, um Speicher zu sparen.
+- Das leichte Modell ist deutlich schwächer bei hellen Teilen auf hellem Untergrund (z. B. beige Hose auf weißem Laken). Dann mit Zauberstab und Radierer nacharbeiten.
 - Getestet mit echten Fotos: T-Shirt, Chino, Pullover, Jacke, Cap und Sneaker wurden richtig erkannt (meist mit 76–100 % Sicherheit). Jeans wurden einmal nur als „Hose“ erkannt, das lässt sich mit einem Tipp korrigieren.
 - RMBG-1.4 ist für **nicht-kommerzielle** Nutzung freigegeben. Für deinen privaten Kleiderschrank ist das kein Problem.
 - Die Text-Seite der Erkennung ist vorberechnet (`src/lib/clipLabels.json`). Deshalb muss das Handy das große Text-Modell nicht laden. Wenn du Kategorien änderst: `node scripts/build-clip-labels.mjs` ausführen.
+
+## Wenn die Seite abstürzt
+
+Reicht der Arbeitsspeicher eines Handys für das große Modell nicht, beendet der Browser die Seite und lädt sie neu (vor allem Safari auf dem iPhone). Die App fängt das ab:
+
+1. **Nichts geht verloren.** Ausgewählte Fotos werden sofort in einer Warteschlange gespeichert. Nach dem Neuladen steht im Schrank „N Fotos warten noch“ mit einem Knopf zum Weitermachen.
+2. **Die App erkennt den Absturz.** Vor jedem KI-Schritt setzt sie eine Markierung. Ist die beim nächsten Start noch da, war es ein Absturz, und sie stuft automatisch eine Stufe sparsamer herunter: großes Modell → leichtes Modell → KI aus (dann Zauberstab und Radierer).
+3. **Speicherfehler ohne Absturz** (z. B. „out of memory“ im Worker) lösen dasselbe Herunterstufen aus, und der Versuch wird sofort wiederholt.
+4. **Zurücksetzen:** *Mehr → Automatik → Zurücksetzen und wieder voll versuchen*.
 
 ## Tipps für gute Fotos
 

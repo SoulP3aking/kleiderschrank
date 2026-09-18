@@ -2,7 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { CutoutEditor } from '../components/CutoutEditor'
 import { FigureStage } from '../components/FigureStage'
 import { Button, Chip, Field, Icon, Sheet, Slider } from '../components/ui'
-import { aiPreload, aiSupported, onAiProgress, type AiProgress } from '../lib/ai'
+import { aiPreload, aiSupported, onAiProgress, resetWorker, type AiProgress } from '../lib/ai'
+import {
+  classifyBlocked,
+  crashCount,
+  crashLevel,
+  currentPlan,
+  deviceMemory,
+  hasWebGpu,
+  isMobileDevice,
+  resetSafety,
+} from '../lib/aiPlan'
 import { exportBackup, formatBytes, importBackup } from '../lib/backup'
 import { putImage, requestPersistence, storageEstimate, wipeAll } from '../lib/db'
 import { canvasToBlob, imageDataToCanvas, loadScaled, resizeImageData } from '../lib/image'
@@ -11,9 +21,9 @@ import { useStore } from '../lib/store'
 import { DEFAULT_FIGURE, type AiQuality, type Figure, type View } from '../lib/types'
 
 const QUALITY_HINT: Record<AiQuality, string> = {
-  auto: 'Empfohlen. Nutzt die Grafikeinheit, wenn dein Handy das kann (84 MB, ca. 1 s pro Foto) – sonst das kleine Modell (42 MB).',
-  schnell: 'Kleinster Download (42 MB). Rechnet auf dem Prozessor, einige Sekunden pro Foto.',
-  gut: 'Beste Kanten. Ohne Grafikeinheit 168 MB Download und deutlich langsamer.',
+  auto: 'Empfohlen. Großes Modell (42–84 MB). Braucht beim Rechnen rund 550 MB Arbeitsspeicher – stürzt die Seite deshalb ab, wechselt die App von selbst aufs leichte Modell.',
+  schnell: 'Leichtes Modell (4 MB, wenig Arbeitsspeicher). Gut für ältere Handys, aber schwächer bei hellen Teilen auf hellem Untergrund.',
+  gut: 'Beste Kanten, braucht am meisten Speicher (bis 168 MB Download). Eher für den PC.',
 }
 
 const SKIN_TONES = [
@@ -51,6 +61,19 @@ export function SettingsView({ onToast }: { onToast: (t: string) => void }) {
   const setFigure = (patch: Partial<Figure>) => updateSettings({ figure: { ...figure, ...patch } })
 
   useEffect(() => onAiProgress(setProgress), [])
+
+  // Diagnose: was läuft auf diesem Gerät tatsächlich?
+  const [diag, setDiag] = useState<{ plan: string; gpu: boolean } | null>(null)
+  const [diagTick, setDiagTick] = useState(0)
+  useEffect(() => {
+    let alive = true
+    void Promise.all([currentPlan(settings.aiQuality), hasWebGpu()]).then(([plan, gpu]) => {
+      if (alive) setDiag({ plan: plan?.label ?? 'KI aus (nach Abstürzen)', gpu })
+    })
+    return () => {
+      alive = false
+    }
+  }, [settings.aiQuality, diagTick])
   useEffect(() => {
     void storageEstimate().then(setStorage)
     void navigator.storage?.persisted?.().then(setPersisted)
@@ -294,7 +317,7 @@ export function SettingsView({ onToast }: { onToast: (t: string) => void }) {
               {(
                 [
                   ['auto', 'Automatisch'],
-                  ['schnell', 'Sparsam'],
+                  ['schnell', 'Leicht'],
                   ['gut', 'Maximal'],
                 ] as const
               ).map(([id, label]) => (
@@ -342,6 +365,40 @@ export function SettingsView({ onToast }: { onToast: (t: string) => void }) {
               Dieser Browser unterstützt die lokale KI nicht – Zauberstab und Radierer
               funktionieren trotzdem.
             </p>
+          )}
+
+          {diag && (
+            <div className="rounded-xl bg-ink-850 px-3.5 py-3 text-[12px] leading-relaxed text-white/45">
+              <div>
+                Aktiv auf diesem Gerät: <span className="text-white/75">{diag.plan}</span>
+              </div>
+              <div>
+                {isMobileDevice() ? 'Handy/Tablet' : 'Computer'} · Grafikeinheit (WebGPU):{' '}
+                {diag.gpu ? 'ja' : 'nein'} · Arbeitsspeicher:{' '}
+                {deviceMemory() ? `${deviceMemory()} GB` : 'unbekannt'}
+              </div>
+              {(crashCount() > 0 || classifyBlocked()) && (
+                <div className="mt-2 text-amber-200/80">
+                  {crashCount()} Absturz{crashCount() === 1 ? '' : 'e'} erkannt – deshalb{' '}
+                  {crashLevel() > 0 ? `${crashLevel()} Stufe${crashLevel() === 1 ? '' : 'n'} sparsamer` : ''}
+                  {crashLevel() > 0 && classifyBlocked() ? ' und ' : ''}
+                  {classifyBlocked() ? 'ohne automatische Erkennung' : ''}.
+                  <Button
+                    size="sm"
+                    variant="subtle"
+                    className="mt-2 w-full"
+                    onClick={() => {
+                      resetSafety()
+                      resetWorker()
+                      setDiagTick((t) => t + 1)
+                      onToast('Automatik zurückgesetzt – beim nächsten Foto wieder mit voller Stufe')
+                    }}
+                  >
+                    <Icon name="undo" size={15} /> Zurücksetzen und wieder voll versuchen
+                  </Button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </section>

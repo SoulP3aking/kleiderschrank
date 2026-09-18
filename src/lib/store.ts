@@ -22,8 +22,12 @@ interface State {
   outfits: Outfit[]
   plan: Record<string, PlanEntry>
   settings: Settings
+  /** Fotos, die ausgewählt, aber noch nicht fertig bearbeitet sind. */
+  pendingCount: number
 
   load: () => Promise<void>
+  refreshPending: () => Promise<void>
+  discardPending: () => Promise<void>
   addItem: (item: Item) => Promise<void>
   updateItem: (id: string, patch: Partial<Item>) => Promise<void>
   setPlacement: (id: string, view: View, patch: Partial<Placement>) => Promise<void>
@@ -46,13 +50,15 @@ export const useStore = create<State>((set, get) => ({
   outfits: [],
   plan: {},
   settings: DEFAULT_SETTINGS,
+  pendingCount: 0,
 
   load: async () => {
-    const [items, outfits, planList, settings] = await Promise.all([
+    const [items, outfits, planList, settings, pending] = await Promise.all([
       db.allItems(),
       db.allOutfits(),
       db.allPlan(),
       db.loadSettings(),
+      db.pendingIds(),
     ])
     const plan: Record<string, PlanEntry> = {}
     planList.forEach((p) => (plan[p.date] = p))
@@ -62,7 +68,17 @@ export const useStore = create<State>((set, get) => ({
       outfits: outfits.sort((a, b) => b.createdAt - a.createdAt),
       plan,
       settings,
+      pendingCount: pending.length,
     })
+  },
+
+  refreshPending: async () => {
+    set({ pendingCount: (await db.pendingIds()).length })
+  },
+
+  discardPending: async () => {
+    await db.clearPending()
+    set({ pendingCount: 0 })
   },
 
   reloadAll: async () => {

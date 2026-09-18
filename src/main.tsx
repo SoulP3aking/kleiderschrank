@@ -2,6 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import './index.css'
+import { detectCrash } from './lib/aiPlan'
+
+// Muss vor dem ersten Rendern laufen: erkennt, ob die Seite mitten in einem
+// KI-Schritt gestorben ist, und stuft dann auf ein sparsameres Modell herunter.
+detectCrash()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

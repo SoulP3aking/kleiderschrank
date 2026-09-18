@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { aiSegment, aiSupported, onAiProgress, type AiProgress } from '../lib/ai'
+import { AiDisabledError, aiSegment, aiSupported, onAiProgress, type AiProgress } from '../lib/ai'
+import { currentPlan } from '../lib/aiPlan'
 import { applyMask, cleanMask, fullMask, magicWand, paintMask, refineEdges } from '../lib/image'
 import type { AiQuality } from '../lib/types'
 import { Button, Icon, Slider } from './ui'
@@ -35,6 +36,8 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
   const [busy, setBusy] = useState<string | null>(null)
   const [progress, setProgress] = useState<AiProgress | null>(null)
   const [aiError, setAiError] = useState<string | null>(null)
+  const [aiNote, setAiNote] = useState<string | null>(null)
+  const [planLabel, setPlanLabel] = useState<string | null>(null)
   const [canUndo, setCanUndo] = useState(false)
   const [touched, setTouched] = useState(false)
 
@@ -131,8 +134,15 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
     }
     setBusy('KI')
     setAiError(null)
+    setAiNote(null)
     try {
-      const mask = await aiSegment(source, quality)
+      setPlanLabel((await currentPlan(quality))?.label ?? null)
+      const { mask, plan } = await aiSegment(source, quality)
+      if (plan.model === 'u2netp') {
+        setAiNote(
+          'Leichtes Modell aktiv (spart Speicher). Helle Teile auf hellem Grund erkennt es schlechter – Reste mit Zauberstab oder Radierer wegnehmen.',
+        )
+      }
       pushHistory()
       maskRef.current = refineEdges(
         cleanMask(mask, source.width, source.height),
@@ -143,9 +153,11 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
       syncMask()
     } catch (e) {
       setAiError(
-        (e as Error).message?.includes('fetch') || !navigator.onLine
-          ? 'Das Modell konnte nicht geladen werden – bist du offline? Beim ersten Mal braucht es Internet.'
-          : `Automatisches Freistellen fehlgeschlagen: ${(e as Error).message}`,
+        e instanceof AiDisabledError
+          ? 'Die KI hat dieses Gerät mehrfach überlastet und ist deshalb aus. Stell mit Zauberstab und Radierer frei – oder setz sie unter Mehr → Automatik zurück.'
+          : (e as Error).message?.includes('fetch') || !navigator.onLine
+            ? 'Das Modell konnte nicht geladen werden – bist du offline? Beim ersten Mal braucht es Internet.'
+            : `Automatisches Freistellen fehlgeschlagen: ${(e as Error).message}`,
       )
     } finally {
       setBusy(null)
@@ -155,11 +167,17 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
 
   const ranAuto = useRef(false)
   useEffect(() => {
-    if (autoRun && !ranAuto.current && aiSupported()) {
-      ranAuto.current = true
-      void runAi()
-    }
-  }, [autoRun, runAi])
+    if (!autoRun || ranAuto.current || !aiSupported()) return
+    ranAuto.current = true
+    // Nach Abstürzen abgeschaltet? Dann nicht ungefragt wieder starten.
+    void currentPlan(quality).then((plan) => {
+      if (plan) void runAi()
+      else
+        setAiError(
+          'Die KI hat dieses Gerät mehrfach überlastet und ist deshalb aus. Stell mit Zauberstab und Radierer frei – oder setz sie unter Mehr → Automatik zurück.',
+        )
+    })
+  }, [autoRun, quality, runAi])
 
   /* --- Zeigereingabe --- */
   const toImage = (e: React.PointerEvent) => {
@@ -280,6 +298,7 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
               Beim ersten Mal wird das Modell einmalig heruntergeladen. Danach geht es auch
               offline und deutlich schneller.
             </p>
+            {planLabel && <p className="text-[11px] text-white/25">{planLabel}</p>}
           </div>
         )}
       </div>
@@ -287,6 +306,11 @@ export function CutoutEditor({ source, quality, autoRun, onDone, onBack, label }
       {aiError && (
         <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-amber-200/90">
           {aiError}
+        </div>
+      )}
+      {aiNote && !aiError && (
+        <div className="mt-3 rounded-xl border border-ink-700 bg-ink-850 px-3.5 py-2.5 text-[12px] leading-relaxed text-white/55">
+          {aiNote}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ItemEditor } from './components/ItemEditor'
 import { Button, Icon, Sheet, Toast } from './components/ui'
+import { currentPlan, takeCrashNotice, type CrashNotice } from './lib/aiPlan'
 import { useStore } from './lib/store'
 import type { Item } from './lib/types'
 import { CalendarView } from './views/CalendarView'
@@ -32,8 +33,14 @@ export default function App() {
   const load = useStore((s) => s.load)
   const settings = useStore((s) => s.settings)
   const updateSettings = useStore((s) => s.updateSettings)
+  const pendingCount = useStore((s) => s.pendingCount)
+  const discardPending = useStore((s) => s.discardPending)
 
   const [tab, setTab] = useState<Tab>('schrank')
+  const [resume, setResume] = useState(false)
+  // Wurde die Seite gerade nach einem KI-Absturz neu geladen? (erkannt in main.tsx)
+  const [crash, setCrash] = useState<CrashNotice | null>(() => takeCrashNotice())
+  const [nextPlan, setNextPlan] = useState<string | null>(null)
   const [worn, setWorn] = useState<string[]>([])
   const [editorOpen, setEditorOpen] = useState(false)
   const [editItem, setEditItem] = useState<Item | null>(null)
@@ -43,6 +50,17 @@ export default function App() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!crash || !ready) return
+    void currentPlan(settings.aiQuality).then((p) => setNextPlan(p?.label ?? null))
+  }, [crash, ready, settings.aiQuality])
+
+  const resumePending = useCallback(() => {
+    setEditItem(null)
+    setResume(true)
+    setEditorOpen(true)
+  }, [])
 
   const showToast = useCallback((text: string) => {
     setToast(text)
@@ -81,6 +99,25 @@ export default function App() {
       <main
         className={`min-h-0 flex-1 px-4 ${tab === 'studio' ? 'overflow-hidden' : 'overflow-y-auto'}`}
       >
+        {tab === 'schrank' && pendingCount > 0 && !editorOpen && (
+          <div className="mb-3 flex items-center gap-3 rounded-2xl border border-sand-300/30 bg-sand-300/10 px-3.5 py-3">
+            <Icon name="camera" size={18} className="shrink-0 text-sand-200" />
+            <p className="min-w-0 flex-1 text-[13px] leading-snug text-sand-100">
+              {pendingCount === 1 ? '1 Foto wartet' : `${pendingCount} Fotos warten`} noch aufs
+              Freistellen.
+            </p>
+            <Button size="sm" variant="primary" onClick={resumePending}>
+              Weiter
+            </Button>
+            <button
+              onClick={() => void discardPending()}
+              className="shrink-0 p-1 text-white/35 hover:text-white"
+              aria-label="Wartende Fotos verwerfen"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+        )}
         {tab === 'schrank' && (
           <WardrobeView
             onEdit={(item) => {
@@ -130,12 +167,65 @@ export default function App() {
       <ItemEditor
         open={editorOpen}
         edit={editItem}
+        resume={resume}
         onClose={() => {
           setEditorOpen(false)
           setEditItem(null)
+          setResume(false)
         }}
         onSaved={() => showToast(editItem ? 'Gespeichert' : 'Teil im Schrank')}
       />
+
+      <Sheet
+        open={!!crash && settings.onboarded}
+        onClose={() => setCrash(null)}
+        title="Die Seite ist abgestürzt"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="subtle" className="flex-1" onClick={() => setCrash(null)}>
+              OK
+            </Button>
+            {pendingCount > 0 && (
+              <Button
+                variant="primary"
+                className="flex-[1.5]"
+                onClick={() => {
+                  setCrash(null)
+                  resumePending()
+                }}
+              >
+                Weitermachen ({pendingCount})
+              </Button>
+            )}
+          </div>
+        }
+      >
+        {crash && (
+          <div className="space-y-3 pb-2 text-[13.5px] leading-relaxed text-white/65">
+            <p>
+              {crash.task === 'segment'
+                ? `Beim Freistellen (${crash.label}) ist deinem Handy vermutlich der Arbeitsspeicher ausgegangen – der Browser hat die Seite dann neu geladen.`
+                : 'Beim Erkennen der Kategorie ist deinem Handy vermutlich der Arbeitsspeicher ausgegangen – der Browser hat die Seite dann neu geladen.'}
+            </p>
+            <p>
+              {crash.task === 'segment'
+                ? nextPlan
+                  ? `Ab jetzt nutze ich eine sparsamere Einstellung: ${nextPlan}.`
+                  : 'Die automatische Freistellung ist auf diesem Gerät jetzt aus. Mit Zauberstab und Radierer geht es trotzdem.'
+                : 'Die automatische Erkennung ist auf diesem Gerät jetzt aus – die Kategorie wählst du einfach selbst.'}
+            </p>
+            {pendingCount > 0 && (
+              <p className="text-sand-100">
+                Deine Fotos sind nicht verloren: {pendingCount} warten noch und können direkt
+                weiterbearbeitet werden.
+              </p>
+            )}
+            <p className="text-[12px] text-white/35">
+              Zurücksetzen kannst du das unter Mehr → Automatik.
+            </p>
+          </div>
+        )}
+      </Sheet>
 
       <Sheet
         open={!settings.onboarded}
